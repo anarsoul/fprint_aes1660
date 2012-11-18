@@ -128,14 +128,12 @@ static int read_aes1660_response(libusb_device_handle *h, unsigned char *cmd_res
 			res_size, actual_len);
 		return -EIO;
 	}
-#if 0
 	for (i = 0; i < actual_len; i++) {
 		printf("%.2x ", cmd_res[i]);
 		if ((i % 8) == 7)
 			printf("\n");
 	}
 	printf("\n---\n");
-#endif
 	return 0;
 }
 
@@ -177,14 +175,6 @@ static int aes1660_test(libusb_device_handle *h)
 	char filename[128];
 	FILE *out;
 	unsigned char cmd_res[4096];
-
-#if 0
-	out  = fopen("fprint_image.ppm", "wb");
-	if (!out) {
-		msg_err("Can't open file for writing!\n");
-		return -EIO;
-	}
-#endif
 
 	r = do_aes1660_cmd(h, set_idle_cmd, sizeof(set_idle_cmd));
 	if (r) {
