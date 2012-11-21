@@ -24,7 +24,7 @@
 #include <errno.h>
 #include <libusb.h>
 
-#include "aes1660.h"
+#include "aes1660-proto.h"
 
 #define EP_IN (1 | LIBUSB_ENDPOINT_IN)
 #define EP_OUT (2 | LIBUSB_ENDPOINT_OUT)
@@ -114,7 +114,7 @@ static int do_aes1660_cmd(libusb_device_handle *h, const unsigned char *cmd, siz
 	return 0;
 }
 
-static int read_aes1660_response(libusb_device_handle *h, unsigned char *cmd_res, size_t res_size)
+static int read_aes1660_response(libusb_device_handle *h, unsigned char *cmd_res, size_t res_size, FILE *out)
 {
 	int r, actual_len, i;
 	r = libusb_bulk_transfer(h, EP_IN, cmd_res, res_size, &actual_len, BULK_TIMEOUT);
@@ -123,17 +123,20 @@ static int read_aes1660_response(libusb_device_handle *h, unsigned char *cmd_res
 		return r;
 	}
 	msg("Received: %d bytes\n", actual_len);
-	if (res_size != actual_len) {
-		msg("Unexpected response, waited for %d bytes, got %d\n",
-			res_size, actual_len);
-		return -EIO;
-	}
 	for (i = 0; i < actual_len; i++) {
 		printf("%.2x ", cmd_res[i]);
 		if ((i % 8) == 7)
 			printf("\n");
 	}
 	printf("\n---\n");
+	if (res_size != actual_len) {
+		msg("Unexpected response, waited for %d bytes, got %d\n",
+			res_size, actual_len);
+		//return -EIO;
+	}
+	if (out) {
+		fwrite(cmd_res, 1, actual_len, out);
+	}
 	return 0;
 }
 
@@ -141,7 +144,7 @@ static int read_aes1660_response(libusb_device_handle *h, unsigned char *cmd_res
 static int image_sum(unsigned char *buf)
 {
 	int sum = 0, x, y;
-	int offset = 42;
+	int offset = 41;
 	for (y = 0; y < 128; y++) {
 		for (x = 0; x < 4; x++) {
 			sum += (int)(buf[offset + y * 4 + x] >> 4);
@@ -156,7 +159,7 @@ static int image_sum(unsigned char *buf)
 /* Expects 583-byte chunk */
 static void write_ppm(FILE *out, unsigned char *buf)
 {
-	int offset = 42, x, y;
+	int offset = 41, x, y;
 	fprintf(out, "P2\n");
 	fprintf(out, "8 128\n");
 	fprintf(out, "15\n");
@@ -187,7 +190,7 @@ static int aes1660_test(libusb_device_handle *h)
 	}
 
 	/* Get ID response */
-	r = read_aes1660_response(h, cmd_res, 8);
+	r = read_aes1660_response(h, cmd_res, 8, NULL);
 	if (r) {
 		return r;
 	}
@@ -198,21 +201,16 @@ static int aes1660_test(libusb_device_handle *h)
 	msg("Sensor device id: %.2x%2x, bcdDevice: %.2x.%.2x, init status: %.2x\n",
 		cmd_res[4], cmd_res[3], cmd_res[5], cmd_res[6], cmd_res[7]);
 
-	/* Need to perform long init */
-	if (cmd_res[7] == 0x00) {
-		msg("Performing long init...\n");
-		for (i = 0; i < ARRAY_SIZE(init_cmds); i++) {
-			r = do_aes1660_cmd(h, init_cmds[i].cmd, init_cmds[i].len);
-			if (r) {
-				return r;
-			}
-			r = read_aes1660_response(h, cmd_res, 4);
-			if (cmd_res[0] != 0x42) {
-				msg("Bogus response instead of 0x42, type: %d\n", cmd_res[0]);
-			}
+	msg("Performing long init #1...\n");
+	for (i = 0; i < ARRAY_SIZE(aes1660_init_1); i++) {
+		r = do_aes1660_cmd(h, aes1660_init_1[i].cmd, aes1660_init_1[i].len);
+		if (r) {
+			return r;
 		}
-	} else {
-		msg("No need in long init...\n");
+		r = read_aes1660_response(h, cmd_res, 4, NULL);
+		if (cmd_res[0] != 0x42) {
+			msg("Bogus response instead of 0x42, type: %d\n", cmd_res[0]);
+		}
 	}
 
 	/* Read ID again... */
@@ -222,7 +220,7 @@ static int aes1660_test(libusb_device_handle *h)
 	}
 
 	/* Get ID response */
-	r = read_aes1660_response(h, cmd_res, 8);
+	r = read_aes1660_response(h, cmd_res, 8, NULL);
 	if (r) {
 		return r;
 	}
@@ -233,13 +231,13 @@ static int aes1660_test(libusb_device_handle *h)
 		cmd_res[4], cmd_res[3], cmd_res[5], cmd_res[6], cmd_res[7]);
 
 	/* Do calibrate */
-	r = do_aes1660_cmd(h, calibrate_cmd, sizeof(calibrate_cmd));
+	r = do_aes1660_cmd(h, pkt261, sizeof(pkt261));
 	if (r) {
 		return r;
 	}
 
 	/* Get calibrate response */
-	r = read_aes1660_response(h, cmd_res, 4);
+	r = read_aes1660_response(h, cmd_res, 4, NULL);
 	if (r) {
 		return r;
 	}
@@ -247,65 +245,71 @@ static int aes1660_test(libusb_device_handle *h)
 		msg_err("Bogus response instead of 0x06, type: %d\n", cmd_res[0]);
 	}
 
-	r = do_aes1660_cmd(h, led_blink_cmd, sizeof(led_blink_cmd));
+	msg("Performing long init #2...\n");
+	for (i = 0; i < ARRAY_SIZE(aes1660_init_2); i++) {
+		r = do_aes1660_cmd(h, aes1660_init_2[i].cmd, aes1660_init_2[i].len);
+		if (r) {
+			return r;
+		}
+		r = read_aes1660_response(h, cmd_res, 4, NULL);
+		if (cmd_res[0] != 0x42) {
+			msg("Bogus response instead of 0x42, type: %d\n", cmd_res[0]);
+		}
+	}
+
+	/* Read ID again... */
+	r = do_aes1660_cmd(h, read_id_cmd, sizeof(read_id_cmd));
 	if (r) {
 		return r;
 	}
-	/* Wait for finger... */
-	do {
-		r = do_aes1660_cmd(h, finger_det_cmd, sizeof(finger_det_cmd));
-		if (r) {
-			return r;
-		}
 
-		r = read_aes1660_response(h, cmd_res, 4);
-		if (r) {
-			return r;
-		}
-		if (cmd_res[0] != 0x01) {
-			msg_err("Bogus finger det response %.2x!\n", cmd_res[0]);
-		}
-	} while (cmd_res[3] != 0x01 && !aborted);
+	/* Get ID response */
+	r = read_aes1660_response(h, cmd_res, 8, NULL);
+	if (r) {
+		return r;
+	}
+	if (cmd_res[0] != 0x07) {
+		msg_err("Bogus response instead of ID, type: %d\n", cmd_res[0]);
+	}
+	msg("Sensor device id: %.2x%2x, bcdDevice: %.2x.%.2x, init status: %.2x\n",
+		cmd_res[4], cmd_res[3], cmd_res[5], cmd_res[6], cmd_res[7]);
+
+	/* LED blink */
+	r = do_aes1660_cmd(h, pkt1363, sizeof(pkt1363));
+	if (r) {
+		return r;
+	}
+
+	/* Wait for finger? */
+	r = do_aes1660_cmd(h, pkt1365, sizeof(pkt1365));
+	if (r) {
+		return r;
+	}
+
+	r = read_aes1660_response(h, cmd_res, 4, NULL);
+	if (r) {
+		return r;
+	}
+	if (cmd_res[0] != 0x40) {
+		msg_err("Bogus finger det response %.2x!\n", cmd_res[0]);
+	}
 
 	msg("Finger detected!");
 
-	/* Do calibrate */
-	r = do_aes1660_cmd(h, calibrate_cmd, sizeof(calibrate_cmd));
+	/* Start imaging... */
+	r = do_aes1660_cmd(h, pkt1376, sizeof(pkt1376));
 	if (r) {
 		return r;
 	}
-
-	/* Get calibrate response */
-	r = read_aes1660_response(h, cmd_res, 4);
-	if (r) {
-		return r;
-	}
-	if (cmd_res[0] != 0x06) {
-		msg_err("Bogus response instead of 0x06, type: %d\n", cmd_res[0]);
-	}
-
-	/* Wait for finger... */
+	out = fopen("finger.data", "wb");
 	do {
-		r = do_aes1660_cmd(h, capture_cmd, sizeof(capture_cmd));
+		r = read_aes1660_response(h, cmd_res, 4096, out);
 		if (r) {
-			return r;
+			break;
 		}
 
-		r = read_aes1660_response(h, cmd_res, 583);
-		if (r) {
-			return r;
-		}
-		if (cmd_res[0] != 0x49) {
-			msg_err("Bogus capture response %.2x!\n", cmd_res[0]);
-		}
-		snprintf(filename, sizeof(filename), "frame-%.5d.pnm", idx++);
-		out = fopen(filename, "wb");
-		if (out) {
-			write_ppm(out, cmd_res);
-			fclose(out);
-		}
-
-	} while ((image_sum(cmd_res) > 100) && !aborted);
+	} while (!aborted);
+	fclose(out);
 
 	msg("Done!\n");
 
